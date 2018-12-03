@@ -29,7 +29,6 @@
 
 #include "lib/utils.h"
 #include "lib/common.h"
-#include "lib/config.h"
 #include "lib/maps.h"
 #include "lib/arp.h"
 #include "lib/ipv6.h"
@@ -57,7 +56,6 @@
 #define CT_MAP_TYPE BPF_MAP_TYPE_HASH
 #endif
 
-#ifdef ENABLE_IPV6
 struct bpf_elf_map __section_maps CT_MAP_TCP6 = {
 	.type		= CT_MAP_TYPE,
 	.size_key	= sizeof(struct ipv6_ct_tuple),
@@ -74,17 +72,6 @@ struct bpf_elf_map __section_maps CT_MAP_ANY6 = {
 	.max_elem	= CT_MAP_SIZE_ANY,
 };
 
-static inline struct bpf_elf_map *
-get_ct_map6(struct ipv6_ct_tuple *tuple)
-{
-	if (tuple->nexthdr == IPPROTO_TCP) {
-		return &CT_MAP_TCP6;
-	}
-	return &CT_MAP_ANY6;
-}
-#endif
-
-#ifdef ENABLE_IPV4
 struct bpf_elf_map __section_maps CT_MAP_TCP4 = {
 	.type		= CT_MAP_TYPE,
 	.size_key	= sizeof(struct ipv4_ct_tuple),
@@ -102,6 +89,15 @@ struct bpf_elf_map __section_maps CT_MAP_ANY4 = {
 };
 
 static inline struct bpf_elf_map *
+get_ct_map6(struct ipv6_ct_tuple *tuple)
+{
+	if (tuple->nexthdr == IPPROTO_TCP) {
+		return &CT_MAP_TCP6;
+	}
+	return &CT_MAP_ANY6;
+}
+
+static inline struct bpf_elf_map *
 get_ct_map4(struct ipv4_ct_tuple *tuple)
 {
 	if (tuple->nexthdr == IPPROTO_TCP) {
@@ -109,17 +105,7 @@ get_ct_map4(struct ipv4_ct_tuple *tuple)
 	}
 	return &CT_MAP_ANY4;
 }
-#endif
 
-#if defined ENABLE_IPV4 || defined ENABLE_IPV6
-static inline bool redirect_to_proxy(int verdict, int dir)
-{
-	return !is_defined(DATAPATH_IPVLAN) && verdict > 0 &&
-	       (dir == CT_NEW || dir == CT_ESTABLISHED);
-}
-#endif
-
-#ifdef ENABLE_IPV6
 static inline int ipv6_l3_from_lxc(struct __sk_buff *skb,
 				   struct ipv6_ct_tuple *tuple, int l3_off,
 				   struct ipv6hdr *ip6, __u32 *dstID)
@@ -269,30 +255,6 @@ skip_service_lookup:
 		return DROP_UNKNOWN_CT;
 	}
 
-	if (redirect_to_proxy(verdict, forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-		union v6addr host_ip = {};
-
-		BPF_V6(host_ip, HOST_IP);
-
-		ret = ipv6_redirect_to_host_port(skb, &csum_off, l4_off,
-						 verdict, tuple->dport,
-						 orig_dip, tuple, &host_ip,
-						 SECLABEL, forwarding_reason,
-						 monitor);
-		if (IS_ERR(ret))
-			return ret;
-
-		cilium_dbg(skb, DBG_TO_HOST, skb->cb[CB_POLICY], 0);
-
-		ret = ipv6_l3(skb, l3_off, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr, METRIC_EGRESS);
-		if (ret != TC_ACT_OK)
-			return ret;
-
-		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
-		return redirect(HOST_IFINDEX, 0);
-	}
-
 	if (!revalidate_data(skb, &data, &data_end, &ip6))
 		return DROP_INVALID;
 
@@ -318,46 +280,10 @@ skip_service_lookup:
 	}
 
 	/* The packet goes to a peer not managed by this agent instance */
-#if defined(ENCAP_IFINDEX) && !defined(DATAPATH_IPVLAN)
-	if (tunnel_endpoint) {
-		return encap_and_redirect_with_nodeid(skb, tunnel_endpoint,
-						      SECLABEL, monitor);
-	} else {
-		/* FIXME GH-1391: Get rid of the initializer */
-		struct endpoint_key key = {};
-
-		/* Lookup the destination prefix in the list of known
-		 * destination prefixes. If there is a match, the packet will
-		 * be encapsulated to that node and then routed by the agent on
-		 * the remote node.
-		 *
-		 * IPv6 lookup key: daddr/96
-		 */
-		key.ip6.p1 = daddr->p1;
-		key.ip6.p2 = daddr->p2;
-		key.ip6.p3 = daddr->p3;
-		key.ip6.p4 = 0;
-		key.family = ENDPOINT_KEY_IPV6;
-
-		ret = encap_and_redirect(skb, &key, SECLABEL, monitor);
-
-		/* Fall through if remote prefix was not found
-		 * (DROP_NO_TUNNEL_ENDPOINT) */
-		if (ret != DROP_NO_TUNNEL_ENDPOINT)
-			return ret;
-	}
-#endif
-
-#if defined(ENABLE_NAT46) && !defined(DATAPATH_IPVLAN)
-	if (unlikely(ipv6_addr_is_mapped(daddr))) {
-		ep_tail_call(skb, CILIUM_CALL_NAT64);
-		return DROP_MISSED_TAIL_CALL;
-	}
-#endif
 	goto pass_to_stack;
 
 to_host:
-	if (!is_defined(DATAPATH_IPVLAN)) {
+	if (1) {
 		union macaddr host_mac = HOST_IFINDEX_MAC;
 
 		cilium_dbg(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
@@ -370,7 +296,8 @@ to_host:
 				  HOST_IFINDEX, forwarding_reason, monitor);
 
 		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
-		return redirect(HOST_IFINDEX, 0);
+		//return redirect(HOST_IFINDEX, 0);
+		return TC_ACT_OK;
 	}
 
 pass_to_stack:
@@ -432,9 +359,9 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FROM_LXC) int tail_handle_ipv6
 
 	return ret;
 }
-#endif /* ENABLE_IPV6 */
 
-#ifdef ENABLE_IPV4
+#ifdef LXC_IPV4
+
 static inline int handle_ipv4_from_lxc(struct __sk_buff *skb, __u32 *dstID)
 {
 	struct ipv4_ct_tuple tuple = {};
@@ -444,7 +371,7 @@ static inline int handle_ipv4_from_lxc(struct __sk_buff *skb, __u32 *dstID)
 	int ret, verdict, l3_off = ETH_HLEN, l4_off, forwarding_reason;
 	struct csum_offset csum_off = {};
 	struct endpoint_info *ep;
-	struct lb4_service *svc;
+	//struct lb4_service *svc;
 	struct lb4_key key = {};
 	struct ct_state ct_state_new = {};
 	struct ct_state ct_state = {};
@@ -474,13 +401,16 @@ static inline int handle_ipv4_from_lxc(struct __sk_buff *skb, __u32 *dstID)
 	}
 
 	ct_state_new.orig_dport = key.dport;
+#if 0
+#ifdef ENABLE_IPV4
 	if ((svc = lb4_lookup_service(skb, &key)) != NULL) {
 		ret = lb4_local(get_ct_map4(&tuple), skb, l3_off, l4_off, &csum_off,
 				&key, &tuple, svc, &ct_state_new, ip4->saddr);
 		if (IS_ERR(ret))
 			return ret;
 	}
-
+#endif
+#endif
 skip_service_lookup:
 	/* The verifier wants to see this assignment here in case the above goto
 	 * skip_service_lookup is hit. However, in the case the packet
@@ -568,30 +498,6 @@ skip_service_lookup:
 		return DROP_UNKNOWN_CT;
 	}
 
-	if (redirect_to_proxy(verdict, forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-
-		ret = ipv4_redirect_to_host_port(skb, &csum_off, l4_off,
-						 verdict, tuple.dport,
-						 orig_dip, &tuple, SECLABEL,
-						 forwarding_reason, monitor);
-		if (IS_ERR(ret))
-			return ret;
-
-		/* After L4 write in port mapping: revalidate for direct packet access */
-		if (!revalidate_data(skb, &data, &data_end, &ip4))
-			return DROP_INVALID;
-
-		cilium_dbg(skb, DBG_TO_HOST, skb->cb[CB_POLICY], 0);
-
-		ret = ipv4_l3(skb, l3_off, (__u8 *) &router_mac.addr, (__u8 *) &host_mac.addr, ip4);
-		if (ret != TC_ACT_OK)
-			return ret;
-
-		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
-		return redirect(HOST_IFINDEX, 0);
-	}
-
 	/* After L4 write in port mapping: revalidate for direct packet access */
 	if (!revalidate_data(skb, &data, &data_end, &ip4))
 		return DROP_INVALID;
@@ -616,36 +522,10 @@ skip_service_lookup:
 		return ipv4_local_delivery(skb, l3_off, l4_off, SECLABEL, ip4, ep, METRIC_EGRESS);
 	}
 
-#if defined(ENCAP_IFINDEX) && !defined(DATAPATH_IPVLAN)
-	if (tunnel_endpoint) {
-		return encap_and_redirect_with_nodeid(skb, tunnel_endpoint,
-						      SECLABEL, monitor);
-	} else {
-		/* FIXME GH-1391: Get rid of the initializer */
-		struct endpoint_key key = {};
-
-		/* Lookup the destination prefix in the list of known
-		 * destination prefixes. If there is a match, the packet will
-		 * be encapsulated to that node and then routed by the agent on
-		 * the remote node.
-		 *
-		 * IPv4 lookup key: daddr & IPV4_MASK
-		 */
-		key.ip4 = orig_dip & IPV4_MASK;
-		key.family = ENDPOINT_KEY_IPV4;
-
-		ret = encap_and_redirect(skb, &key, SECLABEL, monitor);
-
-		/* Fall through if remote prefix was not found
-		 * (DROP_NO_TUNNEL_ENDPOINT) */
-		if (ret != DROP_NO_TUNNEL_ENDPOINT)
-			return ret;
-	}
-#endif
 	goto pass_to_stack;
 
 to_host:
-	if (!is_defined(DATAPATH_IPVLAN)) {
+	if (1) {
 		union macaddr host_mac = HOST_IFINDEX_MAC;
 
 		cilium_dbg(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
@@ -658,7 +538,8 @@ to_host:
 				  forwarding_reason, monitor);
 
 		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, HOST_IFINDEX);
-		return redirect(HOST_IFINDEX, 0);
+		//return redirect(HOST_IFINDEX, 0);
+		return TC_ACT_OK;
 	}
 
 pass_to_stack:
@@ -680,7 +561,7 @@ pass_to_stack:
 	return TC_ACT_OK;
 }
 
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC) int tail_handle_ipv4(struct __sk_buff *skb)
+/*__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC)*/ static inline int tail_handle_ipv4(struct __sk_buff *skb)
 {
 	__u32 dstID = 0;
 	int ret = handle_ipv4_from_lxc(skb, &dstID);
@@ -692,60 +573,8 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC) int tail_handle_ipv4
 	return ret;
 }
 
-#if !defined(DATAPATH_IPVLAN)
-/*
- * ARP responder for ARP requests from container
- * Respond to IPV4_GATEWAY with NODE_MAC
- */
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_ARP) int tail_handle_arp(struct __sk_buff *skb)
-{
-	union macaddr mac = NODE_MAC;
-	return arp_respond(skb, &mac);
-}
-#endif /* !defined(DATAPATH_IPVLAN) */
-#endif /* ENABLE_IPV4 */
-
-/* Attachment/entry point is ingress for veth, egress for ipvlan. */
-__section("from-container")
-int handle_xgress(struct __sk_buff *skb)
-{
-	int ret;
-
-	bpf_clear_cb(skb);
-
-	send_trace_notify(skb, TRACE_FROM_LXC, SECLABEL, 0, 0, 0, 0,
-			  TRACE_PAYLOAD_LEN);
-
-	switch (skb->protocol) {
-#ifdef ENABLE_IPV6
-	case bpf_htons(ETH_P_IPV6):
-		ep_tail_call(skb, CILIUM_CALL_IPV6_FROM_LXC);
-		ret = DROP_MISSED_TAIL_CALL;
-		break;
 #endif
-#ifdef ENABLE_IPV4
-	case bpf_htons(ETH_P_IP):
-		ep_tail_call(skb, CILIUM_CALL_IPV4_FROM_LXC);
-		ret = DROP_MISSED_TAIL_CALL;
-		break;
-#if !defined(DATAPATH_IPVLAN)
-	case bpf_htons(ETH_P_ARP):
-		ep_tail_call(skb, CILIUM_CALL_ARP);
-		ret = DROP_MISSED_TAIL_CALL;
-		break;
-#endif /* !defined(DATAPATH_IPVLAN) */
-#endif
-	default:
-		ret = DROP_UNKNOWN_L3;
-	}
 
-	if (IS_ERR(ret))
-		return send_drop_notify(skb, SECLABEL, 0, 0, 0, ret, TC_ACT_SHOT,
-					METRIC_EGRESS);
-	return ret;
-}
-
-#ifdef ENABLE_IPV6
 static inline int __inline__
 ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding_reason, struct ep_config *cfg)
 {
@@ -756,7 +585,6 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 	int ret, l4_off, verdict, hdrlen;
 	struct ct_state ct_state = {};
 	struct ct_state ct_state_new = {};
-	bool skip_proxy = false;
 	union v6addr orig_dip = {};
 	__u32 monitor = 0;
 
@@ -769,10 +597,6 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 	ipv6_addr_copy(&tuple.daddr, (union v6addr *) &ip6->daddr);
 	ipv6_addr_copy(&tuple.saddr, (union v6addr *) &ip6->saddr);
 	ipv6_addr_copy(&orig_dip, (union v6addr *) &ip6->daddr);
-
-	/* If packet is coming from the egress proxy we have to skip
-	 * redirection to the egress proxy as we would loop forever. */
-	skip_proxy = tc_index_skip_proxy(skb);
 
 	hdrlen = ipv6_hdrlen(skb, ETH_HLEN, &tuple.nexthdr);
 	if (hdrlen < 0)
@@ -834,9 +658,6 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return verdict;
 	}
 
-	if (skip_proxy)
-		verdict = 0;
-
 	if (ret == CT_NEW) {
 		ct_state_new.orig_dport = tuple.dport;
 		ct_state_new.src_sec_id = src_label;
@@ -847,35 +668,9 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		/* NOTE: tuple has been invalidated after this */
 	}
 
-	if (redirect_to_proxy(verdict, *forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-		union macaddr router_mac = NODE_MAC;
-		union v6addr host_ip = {};
-
-		BPF_V6(host_ip, HOST_IP);
-
-		ret = ipv6_redirect_to_host_port(skb, &csum_off, l4_off,
-						 verdict, tuple.dport,
-						 orig_dip, &tuple, &host_ip, src_label,
-						 *forwarding_reason, monitor);
-		if (IS_ERR(ret))
-			return ret;
-
-		if (eth_store_saddr(skb, (__u8 *) &router_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		if (eth_store_daddr(skb, (__u8 *) &host_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		skb->cb[CB_IFINDEX] = HOST_IFINDEX;
-	} else { // Not redirected to host / proxy.
-		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
-				  LXC_ID, ifindex, *forwarding_reason, monitor);
-	}
-
-	ifindex = skb->cb[CB_IFINDEX];
-	if (ifindex)
-		return datapath_redirect(ifindex, 0);
+	//ifindex = skb->cb[CB_IFINDEX];
+	//if (ifindex)
+	//	return redirect(ifindex, 0);
 
 	return TC_ACT_OK;
 }
@@ -898,9 +693,8 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_TO_LXC) int tail_ipv6_policy(s
 
 	return ret;
 }
-#endif /* ENABLE_IPV6 */
 
-#ifdef ENABLE_IPV4
+#ifdef LXC_IPV4
 static inline int __inline__
 ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding_reason, struct ep_config *cfg)
 {
@@ -911,7 +705,6 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 	int ret, verdict, l4_off;
 	struct ct_state ct_state = {};
 	struct ct_state ct_state_new = {};
-	bool skip_proxy = false;
 	__be32 orig_dip, orig_sip;
 	bool is_fragment = false;
 	__u32 monitor = 0;
@@ -921,10 +714,6 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 
 	policy_clear_mark(skb);
 	tuple.nexthdr = ip4->protocol;
-
-	/* If packet is coming from the egress proxy we have to skip
-	 * redirection to the egress proxy as we would loop forever. */
-	skip_proxy = tc_index_skip_proxy(skb);
 
 	tuple.daddr = ip4->daddr;
 	tuple.saddr = ip4->saddr;
@@ -941,14 +730,6 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return ret;
 
 	*forwarding_reason = ret;
-
-#ifdef ENABLE_NAT46
-	if (skb->cb[CB_NAT46_STATE] == NAT46) {
-		ep_tail_call(skb, CILIUM_CALL_NAT46);
-		return DROP_MISSED_TAIL_CALL;
-	}
-#endif
-
 	if (unlikely(ret == CT_REPLY && ct_state.rev_nat_index &&
 		     !ct_state.loopback)) {
 		int ret2;
@@ -979,9 +760,6 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return verdict;
 	}
 
-	if (skip_proxy)
-		verdict = 0;
-
 	if (ret == CT_NEW) {
 		ct_state_new.orig_dport = tuple.dport;
 		ct_state_new.src_sec_id = src_label;
@@ -992,34 +770,9 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		/* NOTE: tuple has been invalidated after this */
 	}
 
-	if (redirect_to_proxy(verdict, *forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-		union macaddr router_mac = NODE_MAC;
-
-		ret = ipv4_redirect_to_host_port(skb, &csum_off, l4_off,
-						 verdict, tuple.dport,
-						 orig_dip, &tuple, src_label,
-						 *forwarding_reason, monitor);
-		if (IS_ERR(ret))
-			return ret;
-
-		cilium_dbg(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
-
-		if (eth_store_saddr(skb, (__u8 *) &router_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		if (eth_store_daddr(skb, (__u8 *) &host_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		skb->cb[CB_IFINDEX] = HOST_IFINDEX;
-	} else { // Not redirected to host / proxy.
-		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
-				  LXC_ID, ifindex, *forwarding_reason, monitor);
-	}
-
-	ifindex = skb->cb[CB_IFINDEX];
-	if (ifindex)
-		return datapath_redirect(ifindex, 0);
+	//ifindex = skb->cb[CB_IFINDEX];
+	//if (ifindex)
+	//	return redirect(ifindex, 0);
 
 	return TC_ACT_OK;
 }
@@ -1040,7 +793,8 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_TO_LXC) int tail_ipv4_policy(s
 
 	return ret;
 }
-#endif /* ENABLE_IPV4 */
+
+#endif
 
 /* Handle policy decisions as the packet makes its way towards the endpoint.
  * Previously, the packet may have come from another local endpoint, another
@@ -1055,19 +809,17 @@ __section_tail(CILIUM_MAP_POLICY, LXC_ID) int handle_policy(struct __sk_buff *sk
 	__u32 src_label = skb->cb[CB_SRC_LABEL];
 
 	switch (skb->protocol) {
-#ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
 		ep_tail_call(skb, CILIUM_CALL_IPV6_TO_LXC);
 		ret = DROP_MISSED_TAIL_CALL;
 		break;
-#endif /* ENABLE_IPV6 */
 
-#ifdef ENABLE_IPV4
+#ifdef LXC_IPV4
 	case bpf_htons(ETH_P_IP):
 		ep_tail_call(skb, CILIUM_CALL_IPV4_TO_LXC);
 		ret = DROP_MISSED_TAIL_CALL;
 		break;
-#endif /* ENABLE_IPV4 */
+#endif
 
 	default:
 		ret = DROP_UNKNOWN_L3;
@@ -1081,48 +833,50 @@ __section_tail(CILIUM_MAP_POLICY, LXC_ID) int handle_policy(struct __sk_buff *sk
 	return ret;
 }
 
-#if defined(ENABLE_NAT46) && !defined(DATAPATH_IPVLAN)
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_NAT64) int tail_ipv6_to_ipv4(struct __sk_buff *skb)
+# define printk2(fmt, ...)                                       \
+                ({                                              \
+                        char ____fmt[] = fmt;                   \
+                       trace_printk(____fmt, sizeof(____fmt),  \
+                                     ##__VA_ARGS__);            \
+                })
+
+__section("entry") int handle_egress(struct __sk_buff *skb)
 {
-	int ret = ipv6_to_ipv4(skb, 14, LXC_IPV4);
-	if (IS_ERR(ret))
-		return  send_drop_notify(skb, SECLABEL, 0, 0, 0, ret, TC_ACT_SHOT,
-				METRIC_EGRESS);
+	int ret;
 
-	cilium_dbg_capture(skb, DBG_CAPTURE_AFTER_V64, skb->ingress_ifindex);
+	bpf_clear_cb(skb);
 
-	skb->cb[CB_NAT46_STATE] = NAT64;
+	send_trace_notify(skb, TRACE_FROM_LXC, SECLABEL, 0, 0, 0, 0,
+			  TRACE_PAYLOAD_LEN);
+//	cilium_dbg3(skb, DBG_GENERIC, 0, 0, __LINE__);
+//	printk2("XXX %p: %u\n", skb, __LINE__);
 
-	ep_tail_call(skb, CILIUM_CALL_IPV4_FROM_LXC);
-	return DROP_MISSED_TAIL_CALL;
-}
+	switch (skb->protocol) {
+	case bpf_htons(ETH_P_IPV6):
+//		cilium_dbg3(skb, DBG_GENERIC, 0, 0, __LINE__);
+		printk2("XXX v8 %p: %u\n", skb, __LINE__);
+		ep_tail_call(skb, CILIUM_CALL_IPV6_FROM_LXC);
+		ret = DROP_MISSED_TAIL_CALL;
+		break;
 
-static inline int __inline__ handle_ipv4_to_ipv6(struct __sk_buff *skb)
-{
-	union v6addr dp = {};
-	void *data, *data_end;
-	struct iphdr *ip4;
+#ifdef LXC_IPV4
+	case bpf_htons(ETH_P_IP):
+//		cilium_dbg3(skb, DBG_GENERIC, 0, 0, __LINE__);
+//		printk2("XXX %p: %u\n", skb, __LINE__);
+//		ep_tail_call(skb, CILIUM_CALL_IPV4_FROM_LXC);
+		tail_handle_ipv4(skb);
+		ret = DROP_MISSED_TAIL_CALL;
+		break;
+#endif
 
-	if (!revalidate_data(skb, &data, &data_end, &ip4))
-		return DROP_INVALID;
-
-	BPF_V6(dp, LXC_IP);
-	return ipv4_to_ipv6(skb, ip4, 14, &dp);
-
-}
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_NAT46) int tail_ipv4_to_ipv6(struct __sk_buff *skb)
-{
-	int ret = handle_ipv4_to_ipv6(skb);
+	default:
+		ret = DROP_UNKNOWN_L3;
+	}
 
 	if (IS_ERR(ret))
 		return send_drop_notify(skb, SECLABEL, 0, 0, 0, ret, TC_ACT_SHOT,
-				METRIC_INGRESS);
-
-	cilium_dbg_capture(skb, DBG_CAPTURE_AFTER_V46, skb->ingress_ifindex);
-
-	ep_tail_call(skb, CILIUM_CALL_IPV6_TO_LXC);
-	return DROP_MISSED_TAIL_CALL;
+					METRIC_EGRESS);
+	return ret;
 }
-#endif /* defined(ENABLE_NAT46) && !defined(DATAPATH_IPVLAN) */
 
 BPF_LICENSE("GPL");
