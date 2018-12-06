@@ -1724,9 +1724,14 @@ func (kub *Kubectl) CiliumPreFlightCheck() error {
 		if err != nil {
 			return false
 		}
-		err = kub.CiliumHealthPreFlightCheck()
-		if err != nil {
-			return false
+
+		switch GetCurrentIntegration() {
+		case CIIntegrationFlannel:
+		default:
+			err = kub.CiliumHealthPreFlightCheck()
+			if err != nil {
+				return false
+			}
 		}
 		err = kub.fillServiceCache()
 		if err != nil {
