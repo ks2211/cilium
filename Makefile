@@ -242,7 +242,7 @@ logging-subsys-field:
 	@$(ECHO_CHECK) contrib/scripts/check-logging-subsys-field.sh
 	$(QUIET) contrib/scripts/check-logging-subsys-field.sh
 
-precheck: govet ineffassign logging-subsys-field
+precheck: ineffassign logging-subsys-field
 	@$(ECHO_CHECK) contrib/scripts/check-fmt.sh
 	$(QUIET) contrib/scripts/check-fmt.sh
 	@$(ECHO_CHECK) contrib/scripts/check-log-newlines.sh
