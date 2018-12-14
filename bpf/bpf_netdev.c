@@ -400,7 +400,12 @@ static inline int handle_ipv4(struct __sk_buff *skb, __u32 src_identity)
 		/* Let through packets to the node-ip so they are
 		 * processed by the local ip stack */
 		if (ep->flags & ENDPOINT_F_HOST)
+#ifdef POLICY_ENFORCEMENT_MODE
+			/* This is required for L7 proxy to send packets to the host. */
+			return redirect(HOST_IFINDEX, BPF_F_INGRESS);
+#else
 			return TC_ACT_OK;
+#endif
 
 		return ipv4_local_delivery(skb, ETH_HLEN, l4_off, secctx, ip4, ep, METRIC_INGRESS);
 	}

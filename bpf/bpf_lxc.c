@@ -1043,7 +1043,6 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		skb->cb[CB_IFINDEX] = HOST_IFINDEX;
 
 #ifdef POLICY_ENFORCEMENT_MODE
-		cilium_dbg_capture(skb, DBG_CAPTURE_DELIVERY, 6001);
 		return redirect(HOST_IFINDEX, BPF_F_INGRESS);
 #else
 		return redirect(HOST_IFINDEX, 0);
