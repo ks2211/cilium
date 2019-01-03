@@ -79,8 +79,14 @@ func Insert(ep *endpoint.Endpoint) error {
 		if id == uint16(0) {
 			return fmt.Errorf("no more endpoint IDs available")
 		}
-
 		ep.ID = id
+
+		// Update endpoint logger to contain ID.
+		ep.UnconditionalRLock()
+		ep.UpdateLogger(map[string]interface{}{
+			logfields.EndpointID: ep.ID,
+		})
+		ep.RUnlock()
 	}
 
 	// No need to check liveness as an endpoint can only be deleted via the
@@ -399,10 +405,12 @@ func AddEndpoint(owner endpoint.Owner, ep *endpoint.Endpoint, reason string) (er
 	}
 
 	if build {
-		if err := ep.RegenerateWait(owner, reason); err != nil {
-			Remove(ep)
-			return err
-		}
+		go func() {
+			if err := ep.RegenerateWait(owner, reason); err != nil {
+				ep.Logger("endpointmanager").Error("removing endpoint because initial build failed")
+				Remove(ep)
+			}
+		}()
 	}
 
 	ep.InsertEvent()
