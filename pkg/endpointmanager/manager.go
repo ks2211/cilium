@@ -375,7 +375,7 @@ func GetEndpoints() []*endpoint.Endpoint {
 }
 
 // AddEndpoint takes the prepared endpoint object and starts managing it.
-func AddEndpoint(owner endpoint.Owner, ep *endpoint.Endpoint, reason string) (err error) {
+func AddEndpoint(owner endpoint.Owner, ep *endpoint.Endpoint, reason string, asynchronouslyBuild bool) (err error) {
 	alwaysEnforce := policy.GetPolicyEnabled() == option.AlwaysEnforce
 	ep.SetDesiredIngressPolicyEnabled(alwaysEnforce)
 	ep.SetDesiredEgressPolicyEnabled(alwaysEnforce)
@@ -405,12 +405,20 @@ func AddEndpoint(owner endpoint.Owner, ep *endpoint.Endpoint, reason string) (er
 	}
 
 	if build {
-		go func() {
+		if asynchronouslyBuild {
+			go func() {
+				if err := ep.RegenerateWait(owner, reason); err != nil {
+					ep.Logger("endpointmanager").Error("removing endpoint because initial build failed")
+					Remove(ep)
+				}
+			}()
+		} else {
 			if err := ep.RegenerateWait(owner, reason); err != nil {
 				ep.Logger("endpointmanager").Error("removing endpoint because initial build failed")
 				Remove(ep)
+				return err
 			}
-		}()
+		}
 	}
 
 	ep.InsertEvent()

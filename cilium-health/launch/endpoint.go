@@ -263,7 +263,7 @@ func LaunchAsEndpoint(owner endpoint.Owner, hostAddressing *models.NodeAddressin
 	}
 
 	// Add the endpoint
-	if err := endpointmanager.AddEndpoint(owner, ep, "Create cilium-health endpoint"); err != nil {
+	if err := endpointmanager.AddEndpoint(owner, ep, "Create cilium-health endpoint", false); err != nil {
 		return fmt.Errorf("Error while adding endpoint: %s", err)
 	}
 
