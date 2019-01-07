@@ -42,7 +42,7 @@ export 'VM_BASENAME'=${K8S+"k8s"}
 # Set VAGRANT_DEFAULT_PROVIDER to virtualbox
 export 'VAGRANT_DEFAULT_PROVIDER'=${VAGRANT_DEFAULT_PROVIDER:-"virtualbox"}
 # Sets the default cilium TUNNEL_MODE to "vxlan"
-export 'TUNNEL_MODE_STRING'=${TUNNEL_MODE_STRING:-"-t vxlan"}
+export 'TUNNEL_MODE_STRING'=${TUNNEL_MODE_STRING:-"-t disabled"}
 # Replies Yes to all prompts asked in this script
 export 'YES_TO_ALL'=${YES_TO_ALL:-"0"}
 
